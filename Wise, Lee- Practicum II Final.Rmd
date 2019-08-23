@@ -1,0 +1,876 @@
+---
+title: "Practicum 2"
+output:
+  html_document:
+    df_print: paged
+---
+
+<h3>Practicum II- Analysis of High School Data</h3>
+<h3>Wise, Lee</h3>
+July 9, 2019
+
+###Questions to answer
+What words or phrases are most commonly used in the description of student behavioral incidences?
+Are there differences in the ways that events are described based on race or gender?  (Length of statement, sentiment, etc?)
+Are certain groups of students more likely to be involved in certain behavioral violations?
+Are there patterns in what time(s) of year have more violations/issues?
+
+Week 1- Project Proposal/Acceptance
+Week 2- Gathering of data and beginning data cleaning
+Week 3- EDA and initial Visualizations
+Week 4- Word wall and text analysis
+Week 5- Sentiment analysis including cleaning and pre-processing
+Week 6- Possible comparison of machine learning to lexicon-based sentiment analysis
+Week 7- Student behavioral data clustering and analysis
+Week 8- Final Conclusions/Presentation of Data
+
+
+###Clear Data and Load Libraries
+```{r}
+rm(list = ls())
+library(ggplot2) #For graphical analysis
+#install.packages('ggpmisc')
+library(ggpmisc)
+library(hexbin) #For hexagonal density plots
+#install.packages('randomForest')
+library(randomForest) #For RF machine learning
+library(tidyverse)
+#install.packages('tidytext')
+library(tidytext) #For sentiment analysis
+#install.packages('stringr')
+library(stringr) #For breaking up text
+library(visdat) #For cisualizing missing data
+library(naniar) #For cisualizing missing data
+library(corrplot)
+#install.packages('ggmap')
+#install.packages('maps')
+library(ggmap) #Can be used to graph on a map with ggplot
+library(maps) #Can be used to graph on a map with ggplot
+#install.packages('car')
+library(car) #Used for statistical testing
+library(caret)#For machine learning model evaluation
+library(cluster) #For Clustering
+library(factoextra) #For Cluster Visualizations
+library(plyr)
+library(dplyr) #For filtering, sorting, selecting, and manipulating data
+library(lubridate) #For datetime conversions
+#install.packages('digest')
+library(digest) #For anonymizing data
+#install.packages('textdata')
+library(textdata) #Needed for AFINN sentiment library
+```
+
+###Read in Data
+```{r}
+grades1819 <- read.csv('grades1819.csv', header = TRUE, stringsAsFactors = TRUE)
+event1617 <- read.csv('event_detail1617.csv', header = TRUE, stringsAsFactors = TRUE)
+event1718 <- read.csv('event_detail1718.csv', header = TRUE, stringsAsFactors = TRUE)
+event1819 <- read.csv('event_detail1819.csv', header = TRUE, stringsAsFactors = TRUE)
+s2risk <- read.csv('s2risk.csv', header = TRUE, stringsAsFactors = TRUE)
+```
+
+###Add year feature to behavioral event descriptions
+```{r}
+event1617$year <- 1617
+event1718$year <- 1718
+event1819$year <- 1819
+```
+
+List of Ethnicity Coding
+1.       Native American, Native Alaskan
+2.       Asian
+3.       Black
+4.       Hispanic
+5.       White
+6.       Native Hawaiian / Native Islander
+7.       Multiple Ethnicities
+
+###Recode numbers to ethnicity for year 18-19
+```{r}
+event1819$student_raceEthnicity <- mapvalues(event1819$student_raceEthnicity, from = c(2,3,4,5,7), to = c('Asian','Black','Hispanic','White','Multiple Races'))
+```
+
+
+###View Distribution of Events
+```{r}
+table(event1617$student_raceEthnicity)
+table(event1718$student_raceEthnicity)
+table(event1819$student_raceEthnicity)
+```
+
+
+###Combine into one big dataset
+```{r}
+behavior_events <- rbind(event1617, event1718, event1819)
+```
+
+###Drop Resolution Column
+```{r}
+behavior_events <- subset(behavior_events, select = -c(behaviorDetail_resolutionName))
+```
+
+###Drop Suplicate Rows
+```{r}
+behavior_events <- distinct(behavior_events)
+```
+
+###Convert incident date to a datetime object
+https://cran.r-project.org/web/packages/lubridate/vignettes/lubridate.html
+```{r}
+behavior_events$behaviorDetail_incidentDate <- mdy(behavior_events$behaviorDetail_incidentDate)
+```
+
+###Convert year column to factor because the specific number has no meaning
+```{r}
+behavior_events$year <- as.factor(behavior_events$year)
+behavior_events$behaviorDetail_details <- as.character(behavior_events$behaviorDetail_details)
+```
+
+###Add what day of the week the incident occurred. Also make the days factor levels in order for graphing correctly.
+https://groups.google.com/forum/#!topic/ggplot2/kRKWIiPQAdk
+```{r}
+behavior_events$weekday <- weekdays(as.Date(behavior_events$behaviorDetail_incidentDate))
+behavior_events$weekday <- factor(behavior_events$weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+```
+
+```{r}
+table(behavior_events$weekday)
+```
+
+
+
+###View Structure of Data
+```{r}
+str(grades1819)
+str(s2risk)
+str(behavior_events)
+```
+
+
+```{r}
+summary(grades1819)
+#Remove grades with a percentage over 110%
+grades1819 <- grades1819 %>% filter(Percent < 110)
+```
+
+```{r}
+summary(s2risk)
+```
+
+```{r}
+summary(behavior_events)
+```
+
+###Anonymize student data using method 3 found in this blog
+https://www.r-bloggers.com/anonymising-data/
+```{r}
+anonymise <- function(data, cols_to_anon, algo = "crc32")
+{
+  if(!require(digest)) stop("digest package is required")
+  to_anon <- subset(data, select = cols_to_anon)
+  unname(apply(to_anon, 1, digest, algo = algo))
+}
+```
+
+###Create new unique anonymous ID numbers
+```{r}
+behavior_ID <- anonymise(behavior_events)
+behavior_events$student_studentNumber <- behavior_ID
+behavior_events <- subset(behavior_events, select = -c(function_Name))
+
+grades_ID <- anonymise(grades1819)
+grades1819$ID.. <- grades_ID
+grades1819 <- subset(grades1819, select = -c(Name))
+
+risk_ID <- anonymise(s2risk)
+s2risk$ID. <- risk_ID
+s2risk <- subset(s2risk, select = -c(Full.Name))
+```
+
+###Change column names to more readable variable names
+```{r}
+names(behavior_events) <- c('ID','grade','date','gender','race_ethnicity','offense','details','year','weekday')
+names(grades1819) <- c('ID','gender','race_ethnicity','grade','grad_class','course','course_name','period','teacher','score','percent','ELA_status','IEP_status','Term','GPA')
+names(s2risk) <- c('ID','color','risk_points','counselor','gender','ethnicity','ELA_status','IES_status','GT_status','grade','grad_class','attendance','tardies','absenteeism','credits','gpa','on_track','D_count','F_count','behavior_events')
+```
+
+
+
+###Round grades for simplicity in visualizations
+```{r}
+grades_copy <- grades1819
+grades_copy$percent <- round(grades_copy$percent,1)
+```
+
+
+###View distribution of grades across all subjects and students
+```{r}
+?hist
+hist(grades_copy$percent, xlim = range(1,100), breaks = 1000, main = 'Grade Distribution', xlab = 'Percentage')
+```
+
+
+
+###View distribution of grades across all subjects and students
+###Ggplot allows more control
+```{r}
+ggplot(grades_copy, aes(x=percent)) + 
+  geom_histogram(binwidth=.1) +
+  xlim(50,105) +
+  ylim(0,100) +
+  ggtitle('Grade Distribution in High School')
+
+ggplot(grades_copy, aes(x=percent, fill=factor(ifelse(percent==c(79.5, 82.5, 89.5, 92.5),"Highlighted","Normal")))) + 
+  geom_histogram(binwidth=.1) +
+  scale_fill_manual(name = "percent", values=c("green","grey50")) +
+  xlim(50,105) +
+  ylim(0,100) +
+  ggtitle('Grade Distribution in High School')
+
+ggplot(grades_copy, aes(x=percent, fill=factor(ifelse(percent==c( 92.5),"Highlighted","Normal")))) + 
+  geom_histogram(binwidth=.1) +
+  scale_fill_manual(name = "percent", values=c("green","grey50")) +
+  xlim(90,94) +
+  ylim(0,100) +
+  ggtitle('Grade Distribution')
+```
+
+```{r}
+hist(s2risk$risk_points)
+hist(s2risk$grad_class)
+```
+
+###Create plot showing number of indicents by specific days of the year to look for patterns
+```{r}
+ggplot(behavior_events, aes(x = format(date, "%m-%d"), fill = year)) + 
+  geom_bar(position = 'dodge') +
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(behavior_events, aes(x = date))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+###See which days of the week tend to have the most behavioral events
+```{r}
+ggplot(behavior_events, aes(x = weekday, fill = year)) + 
+  geom_bar(position = 'dodge') +
+  ggtitle("Behavior Events by Day of the Week")+
+  xlab('Day')+
+  ylab('Count')+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(behavior_events %>% filter(offense ==c('306: Being under the influence of drugs or alcohol')), aes(x = weekday, fill = year)) + 
+  geom_bar(position = 'dodge') +
+  ggtitle("Under the Influence by Day of the Week")+
+  xlab('Day')+
+  ylab('Count')+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(behavior_events %>% filter(offense ==c('306: Being under the influence of drugs or alcohol', '304: Possession of illegal drugs')), aes(x = weekday, fill = year)) + 
+  geom_bar(position = 'dodge') +
+  ggtitle("Drug and Alcohol Events by Day of the Week")+
+  xlab('Day')+
+  ylab('Count')+
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+###View distribution of behavioral offenses
+```{r}
+as.data.frame(table(behavior_events$offense)) %>% arrange(desc(Freq))
+```
+
+###See the top offenses for each subgroup
+```{r}
+behavior_by_race <- behavior_events %>% group_by(race_ethnicity, offense) %>% dplyr::summarise(count = n()) %>% arrange(desc(count))
+behavior_by_race
+```
+
+
+
+###There are so few Native American and Asian students in the behavioral set, they will be included with the 'Multiple Races' group for anonymity. The same if true for 'Islander' and 'Nat Amer' students in the risk set.
+```{r}
+behavior_events$race_ethnicity <- mapvalues(behavior_events$race_ethnicity, from = c('Native American','Asian'), to = c('Multiple Races','Multiple Races'))
+
+s2risk$ethnicity <- mapvalues(s2risk$ethnicity, from = c('Islander','Nat Amer', 'Multiple '), to = c('Multiple Races','Multiple Races','Multiple Races')) #There was a space character after 'multiple'
+```
+
+
+###Look at school makeup and behavior breakdown by ethnicity
+```{r}
+ggplot(s2risk, aes(x = ethnicity)) + 
+  geom_bar() +
+  ggtitle('School Makeup by Race/Ethnicity')+
+  xlab('Race/Ethnicity')+
+  ylab('Count')+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(behavior_events, aes(x = race_ethnicity)) + 
+  geom_bar() +
+  ggtitle('Behavior Events by Race/Ethnicity')+
+  xlab('Race/Ethnicity')+
+  ylab('Count')+
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+###Engineer variable for length of description of behavioral events
+```{r}
+behavior_events <- mutate(behavior_events, details_length = nchar(as.character(details)))
+```
+
+###Plot histograms of behavioral event descriptions
+```{r}
+ggplot(behavior_events, aes(x=details_length)) + 
+  geom_histogram(binwidth=100) +
+  ggtitle('Lengths of Behavior Event Descriptions')
+```
+
+###See breakdown of different groups in the school
+```{r}
+summary(s2risk)
+str(s2risk)
+```
+
+
+###See average lengths of behavioral events
+```{r}
+behavior_events %>%
+  group_by(race_ethnicity) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+
+behavior_events %>%
+  group_by(year, race_ethnicity) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+
+behavior_events %>%
+  group_by(gender) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+
+behavior_events %>%
+  group_by(grade) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+
+behavior_events %>%
+  group_by(offense, race_ethnicity) %>%
+  dplyr::summarise(count = n())
+
+behavior_events %>%
+  group_by(offense, race_ethnicity) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+```
+
+###See number of events and average length by type and ethnicity
+```{r}
+x <- behavior_events %>%
+  group_by(offense, race_ethnicity) %>%
+  dplyr::summarise(av_length = mean(details_length), count = n())
+x
+```
+
+
+###Switch attendance to numeric
+```{r}
+s2risk$attendance <- as.numeric(gsub("\\%", "", s2risk$attendance))
+s2risk$tardies <- as.numeric(gsub("\\%", "", s2risk$tardies))
+```
+
+
+
+```{r}
+ggplot(s2risk, aes(x = attendance, y = gpa))+
+  geom_point() +
+  geom_smooth()+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(s2risk, aes(x = attendance, y = gpa))+
+  geom_point() +
+  geom_smooth()+
+  theme(axis.text.x = element_text(angle = 90))+
+  geom_jitter()+  
+  ggtitle('GPA vs. Attendance Percentage')+
+  xlab('Attendance Percentage')+
+  ylab('GPA')
+```
+
+###WHAT IS THE POINT WHERE A STUDENT IS MORE LIKELY TO FAIL A CLASS, ATTENDANCE WISE?
+
+###Engineer column of rounded absence values for easy grouping
+```{r}
+s2risk_copy <- s2risk
+s2risk_copy$attendance_rounded <- floor(s2risk_copy$attendance/10)*10
+```
+
+###See average GPA by absence groups
+```{r}
+s2risk_copy %>% group_by(attendance_rounded)%>% drop_na() %>% dplyr::summarise(count = n(), avg_gpa = mean(gpa))
+```
+
+###Begin Text Mining Procedure
+http://www.sthda.com/english/wiki/text-mining-and-word-cloud-fundamentals-in-r-5-simple-steps-you-should-know
+```{r}
+# Install
+#install.packages("tm")  # for text mining
+#install.packages("SnowballC") # for text stemming
+#install.packages("wordcloud") # word-cloud generator 
+#install.packages("RColorBrewer") # color palettes
+# Load
+library("tm")
+library("SnowballC")
+library("wordcloud")
+library("RColorBrewer")
+```
+
+```{r}
+table(behavior_events$race_ethnicity)
+```
+
+
+###Create data subsets by ethnicity
+```{r}
+behavior_black <- behavior_events%>% filter(race_ethnicity == 'Black')
+behavior_hispanic <- behavior_events%>% filter(race_ethnicity == 'Hispanic')
+behavior_multiple_races <- behavior_events%>% filter(race_ethnicity == 'Multiple Races')
+behavior_white <- behavior_events%>% filter(race_ethnicity == 'White')
+```
+
+###Create corpus of text from each dataframe
+```{r}
+blackCorpus <- Corpus(VectorSource(behavior_black$details))
+hispanicCorpus <- Corpus(VectorSource(behavior_hispanic$details))
+mrCorpus <- Corpus(VectorSource(behavior_multiple_races$details))
+whiteCorpus <- Corpus(VectorSource(behavior_white$details))
+```
+
+
+###Clean up the text by removing stopwords, spaces, and punctuation
+```{r}
+#Make Lowercase
+blackCorpus <- tm_map(blackCorpus, content_transformer(tolower))
+#Take out numbers
+blackCorpus <- tm_map(blackCorpus, removeNumbers)
+#Remove stopwords
+blackCorpus <- tm_map(blackCorpus, removeWords, stopwords("english"))
+# Optional process to remove your own stop words
+# specify your stopwords as a character vector
+#blackCorpus <- tm_map(blackCorpus, removeWords, c("blabla1", "blabla2")) 
+# Remove punctuation marks
+blackCorpus <- tm_map(blackCorpus, removePunctuation)
+# Remove extra white spaces
+blackCorpus <- tm_map(blackCorpus, stripWhitespace)
+
+
+hispanicCorpus <- tm_map(hispanicCorpus, content_transformer(tolower))
+hispanicCorpus <- tm_map(hispanicCorpus, removeNumbers)
+hispanicCorpus <- tm_map(hispanicCorpus, removeWords, stopwords("english"))
+hispanicCorpus <- tm_map(hispanicCorpus, removePunctuation)
+hispanicCorpus <- tm_map(hispanicCorpus, stripWhitespace)
+
+mrCorpus <- tm_map(mrCorpus, content_transformer(tolower))
+mrCorpus <- tm_map(mrCorpus, removeNumbers)
+mrCorpus <- tm_map(mrCorpus, removeWords, stopwords("english"))
+mrCorpus <- tm_map(mrCorpus, removePunctuation)
+mrCorpus <- tm_map(mrCorpus, stripWhitespace)
+
+whiteCorpus <- tm_map(whiteCorpus, content_transformer(tolower))
+whiteCorpus <- tm_map(whiteCorpus, removeNumbers)
+whiteCorpus <- tm_map(whiteCorpus, removeWords, stopwords("english"))
+whiteCorpus <- tm_map(whiteCorpus, removePunctuation)
+whiteCorpus <- tm_map(whiteCorpus, stripWhitespace)
+```
+
+###Create a Frequency Table
+```{r}
+TDM <- TermDocumentMatrix(whiteCorpus)
+matrix <- as.matrix(TDM)
+sorted <- sort(rowSums(matrix),decreasing=TRUE)
+df <- data.frame(word = names(sorted),freq=sorted)
+fplot <- head(df,10)
+
+ggplot(fplot, aes(x = word, y = freq, fill = word))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Frequency')+
+  ggtitle('Top 10 Words for White Students')
+```
+
+###Remove additional useless words
+```{r}
+whiteCorpus <- tm_map(whiteCorpus, removeWords, c("student", "students", 'class','school','deans')) 
+blackCorpus <- tm_map(blackCorpus, removeWords, c("student", "students", 'class','school','deans')) 
+mrCorpus <- tm_map(mrCorpus, removeWords, c("student", "students", 'class','school','deans')) 
+hispanicCorpus <- tm_map(hispanicCorpus, removeWords, c("student", "students", 'class','school','deans')) 
+```
+
+###Plot new graph
+```{r}
+TDM <- TermDocumentMatrix(whiteCorpus)
+matrix <- as.matrix(TDM)
+sorted <- sort(rowSums(matrix),decreasing=TRUE)
+dfw <- data.frame(word = names(sorted),freq=sorted)
+wplot <- head(dfw,10)
+
+ggplot(wplot, aes(x = word, y = freq, fill = word))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Frequency')+
+  ggtitle('Top 10 Words for White Students')
+
+TDM <- TermDocumentMatrix(blackCorpus)
+matrix <- as.matrix(TDM)
+sorted <- sort(rowSums(matrix),decreasing=TRUE)
+dfb <- data.frame(word = names(sorted),freq=sorted)
+bplot <- head(dfb,10)
+
+ggplot(bplot, aes(x = word, y = freq, fill = word))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Frequency')+
+  ggtitle('Top 10 Words for Black Students')
+
+TDM <- TermDocumentMatrix(mrCorpus)
+matrix <- as.matrix(TDM)
+sorted <- sort(rowSums(matrix),decreasing=TRUE)
+dfmr <- data.frame(word = names(sorted),freq=sorted)
+mrplot <- head(dfmr,10)
+
+ggplot(mrplot, aes(x = word, y = freq, fill = word))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Frequency')+
+  ggtitle('Top 10 Words for Mixed Race Students')
+
+TDM <- TermDocumentMatrix(hispanicCorpus)
+matrix <- as.matrix(TDM)
+sorted <- sort(rowSums(matrix),decreasing=TRUE)
+dfh <- data.frame(word = names(sorted),freq=sorted)
+hplot <- head(dfh,10)
+
+ggplot(hplot, aes(x = word, y = freq, fill = word))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Frequency')+
+  ggtitle('Top 10 Words for Mixed Race Students')
+
+```
+
+###Generate Wordcloud
+###Side note, multiple students apparently had enough trouble to appear in the word cloud themselves by name.  I went back to the original dataset and replaced their names with 'studentone','studenttwo', and 'studentthree' etc, which can be seen in the cloud below.
+###White Student Cloud
+```{r}
+set.seed(1234)
+wordcloud(words = dfw$word, freq = dfw$freq, min.freq = 1,scale=c(3,.05),
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+###Black Student Cloud
+```{r}
+set.seed(1234)
+wordcloud(words = dfb$word, freq = dfb$freq, min.freq = 1,scale=c(3,.05),
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+###Multiple Races Cloud
+```{r}
+set.seed(1234)
+wordcloud(words = dfmr$word, freq = dfmr$freq, min.freq = 1,scale=c(3,.05),
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+###Hispanic Cloud
+```{r}
+set.seed(1234)
+wordcloud(words = dfh$word, freq = dfh$freq, min.freq = 1,scale=c(3,.05),
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+###View top 100 words for each group of students
+```{r}
+head(dfw,100)
+head(dfb,100)
+head(dfh,100)
+head(dfmr,100)
+```
+
+###Sentiment Analysis
+Main resource page: http://rpubs.com/bnevt0/AT336106
+Also used for reference: https://www.datacamp.com/community/tutorials/sentiment-analysis-R
+```{r}
+#install.packages('syuzhet')
+library(syuzhet)
+#install.packages("sentimentr")
+library(sentimentr)
+```
+
+```{r}
+stop_words
+```
+
+###Break apart event descriptions and remove stop words
+```{r}
+BC <- behavior_black %>%
+  unnest_tokens(word, details) %>%  #Call the unnested token column 'word' and break apart the details column
+  anti_join(stop_words) #Remove stop words
+
+HC <- behavior_hispanic %>%
+  unnest_tokens(word, details) %>% 
+  anti_join(stop_words)
+
+WC <- behavior_white %>%
+  unnest_tokens(word, details) %>% 
+  anti_join(stop_words)
+
+MC <- behavior_multiple_races %>%
+  unnest_tokens(word, details) %>% 
+  anti_join(stop_words)
+```
+
+###See most common words (and compare to previous count)
+```{r}
+BC %>% group_by(word) %>% dplyr::summarise(count = n()) %>% arrange(desc(count))
+```
+
+###See sentiments for Bing library (Positive or Negative)
+```{r}
+bcb <- BC %>% inner_join(get_sentiments("bing")) %>% group_by(sentiment) %>% dplyr::summarise(count = n()) %>% mutate(freq = count / sum(count))
+bcb
+wcb <- WC %>% inner_join(get_sentiments("bing")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+wcb
+hcb <- HC %>% inner_join(get_sentiments("bing")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+hcb
+mcb <- MC %>% inner_join(get_sentiments("bing")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+mcb
+```
+
+###Plot sentiments of event descriptions
+```{r}
+pie(bcb$freq, labels = c('Negative Sentiment 88%','Positive Sentiment 12%'), col = c('aquamarine','deeppink'), main = 'Sentiments for Black Students')
+
+pie(wcb$freq, labels = c('Negative Sentiment 84.5%','Positive Sentiment 15.5%'), col = c('aquamarine','deeppink'), main = 'Sentiments for White Students')
+
+pie(hcb$freq, labels = c('Negative Sentiment 86.4%','Positive Sentiment 13.6%'), col = c('aquamarine','deeppink'), main = 'Sentiments for Hispanic Students')
+
+pie(mcb$freq, labels = c('Negative Sentiment 81.7%','Positive Sentiment 18.3%'), col = c('aquamarine','deeppink'), main = 'Sentiments for Mixed Race Students')
+```
+
+
+
+
+###Check Sentiments for AFINN Library (Scale from -5 to +5)
+```{r}
+bfinn <- BC %>% inner_join(get_sentiments("afinn")) %>% group_by(value) %>% dplyr::summarise(count = n()) %>% mutate(freq = count / sum(count)) %>% mutate(total = value * count)
+bfinn
+wfinn <- WC %>% inner_join(get_sentiments("afinn")) %>% group_by(value) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count)) %>% mutate(total = value * count)
+wfinn
+hfinn <- HC %>% inner_join(get_sentiments("afinn")) %>% group_by(value) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count)) %>% mutate(total = value * count)
+hfinn
+mfinn <- MC %>% inner_join(get_sentiments("afinn")) %>% group_by(value) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count)) %>% mutate(total = value * count)
+mfinn
+```
+
+###See average sentiment for each racial group
+###The black students tend to have a more negative average sentiment, but it also could be because their event descriptions tend to be longer in general
+```{r}
+print ('Black')
+mean(bfinn$total)/286
+print('White')
+mean(wfinn$total)/200
+print('Hispanic')
+mean(hfinn$total)/151
+print('Mixed Race')
+mean(mfinn$total)/64
+```
+
+
+###Plot distribution of each sentiment value
+```{r}
+ggplot(bfinn, aes(x = value, y = freq, fill = value))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Black Students')+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0,.5))+
+  scale_x_continuous(breaks = seq(-5, 5, by = 1), limits = c(-5,5))
+
+ggplot(wfinn, aes(x = value, y = freq, fill = value))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for White Students')+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0,0.5))+
+  scale_x_continuous(breaks = seq(-5, 5, by = 1), limits = c(-5,5))
+
+ggplot(hfinn, aes(x = value, y = freq, fill = value))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Hispanic Students')+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0,0.5))+
+  scale_x_continuous(breaks = seq(-5, 5, by = 1), limits = c(-5,5))
+
+ggplot(mfinn, aes(x = value, y = freq, fill = value))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Top 10 Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Mixed Race Students')+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1), limits = c(0,0.5))+
+  scale_x_continuous(breaks = seq(-5, 5, by = 1), limits = c(-5,5))
+```
+
+```{r}
+get_sentiments('nrc')
+```
+
+```{r}
+bnrc <- BC %>% inner_join(get_sentiments("nrc")) %>% group_by(sentiment) %>% dplyr::summarise(count = n()) %>% mutate(freq = count / sum(count))
+bnrc
+wnrc <- WC %>% inner_join(get_sentiments("nrc")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+wnrc
+hnrc <- HC %>% inner_join(get_sentiments("nrc")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+hnrc
+mnrc <- MC %>% inner_join(get_sentiments("nrc")) %>% group_by(sentiment) %>% dplyr::summarise(count = n())%>% mutate(freq = count / sum(count))
+mnrc
+```
+
+
+###Show top words with associated sentiments
+```{r}
+BC %>% inner_join(get_sentiments("nrc")) %>% group_by(sentiment, word) %>% dplyr::summarise(count = n()) %>% filter(count > 20)
+```
+
+
+###Plot Sentiment Word Frequencies
+```{r}
+ggplot(bnrc, aes(x = sentiment, y = freq, fill = sentiment))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Sentiment Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Black Students')
+
+ggplot(wnrc, aes(x = sentiment, y = freq, fill = sentiment))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Sentiment Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for White Students')
+
+ggplot(hnrc, aes(x = sentiment, y = freq, fill = sentiment))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Sentiment Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Hispanic Students')
+
+ggplot(mnrc, aes(x = sentiment, y = freq, fill = sentiment))+
+  geom_bar(stat = 'identity')+
+  theme(legend.position = 'none')+
+  xlab('Sentiment Words')+
+  ylab('Relative Frequency')+
+  ggtitle('Word Usage for Mixed Race Students')
+```
+
+
+###Machine learning
+
+###Visualise Missing Data
+```{r}
+gg_miss_var(s2risk_copy)
+```
+
+###To see which fields are empty (Two students have missing data)
+```{r}
+which(is.na(s2risk_copy$tardies))
+which(is.na(s2risk_copy$credits))
+which(is.na(s2risk_copy$attendance_rounded))
+which(is.na(s2risk_copy$attendance))
+```
+
+###Drop the two students with missing data
+```{r}
+s2risk_noNA <- drop_na(s2risk_copy)
+#Drop ID number column and the engineered attandance column. Also remove the counselor because that's irrelevant for student risk
+s2risk_noNA <- subset(s2risk_noNA, select = -c(ID, attendance_rounded,risk_points,counselor))
+#Because the colors are BASED on the risk points, the risk_points need to be removed as well
+
+```
+
+
+###Create Train and Test Partitions of the Data
+```{r}
+Train <- createDataPartition(y = s2risk_noNA$color,p = 0.8, list = TRUE)
+risk_color_train <- s2risk_noNA[Train$Resample1,]
+risk_color_test <- s2risk_noNA[-Train$Resample1,]
+```
+
+###Create random forest model
+```{r}
+set.seed(100)
+Controls = trainControl(method='cv',number=5)
+rf.colors = train(color~., data=risk_color_train, method = 'rf', metric = 'Accuracy',trControl=Controls, importance = TRUE)
+```
+
+###Look at the RF model
+```{r}
+print(rf.colors)
+```
+
+###Predict using train data
+```{r}
+pred_colors <- as.data.frame(predict(rf.colors, risk_color_test))
+pred_colors$ACTUAL <- risk_color_test$color
+names(pred_colors) <- c('Predicted','Actual')
+pred_colors
+```
+
+###Create a confusion matrix to see accuracy, precision, and recall
+```{r}
+caret::confusionMatrix(pred_colors$Predicted, pred_colors$Actual, mode = 'prec_recall')
+```
+
+###Check variable importances
+```{r}
+varImp(rf.colors)
+```
+
+###Plot variable importances
+```{r}
+varImpPlot(rf.colors$finalModel)
+```
+
+###Alt method for importance plots
+```{r}
+color_importance <- varImp(rf.colors)
+plot(color_importance)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
